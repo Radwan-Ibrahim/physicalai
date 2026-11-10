@@ -11,7 +11,6 @@ import errno
 import importlib
 import json
 import os
-import signal
 import sys
 import threading
 import time
@@ -19,6 +18,9 @@ import traceback
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+from physicalai.capture.transport._iox2_platform import prepare_iceoryx2  # noqa: PLC2701
+from physicalai.transport._subprocess import install_stop_handler  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -357,7 +359,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
     Returns:
         Exit code: 0 on success, 1 on startup failure.
     """
-    signal.signal(signal.SIGTERM, sigterm_handler)
+    install_stop_handler(sigterm_handler)
 
     raw = sys.stdin.read()
     sys.stdin.close()
@@ -376,6 +378,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
 
     camera = None
     try:
+        prepare_iceoryx2()
         iox2 = importlib.import_module("iceoryx2")
 
         with contextlib.suppress(Exception):

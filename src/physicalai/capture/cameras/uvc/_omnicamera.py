@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,56 @@ _MISSING_DEP_PKG = "omni_camera"
 _MISSING_DEP_EXTRA = "capture"
 
 _SYSFS_V4L2 = Path("/sys/class/video4linux")
+
+_IDENTITY_FIELDS = ("serial", "bus", "sensor", "uuid", "index")
+
+
+def _parse_device_meta(raw: str) -> dict[str, Any]:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # pynokhwa <= 0.1.4 emits Windows MediaFoundation symlinks (\\?\usb#...) with unescaped backslashes.
+        return json.loads(raw.replace("\\", "\\\\"))
+
+
+def _query(*, only_usable: bool) -> list[omni_camera.CameraInfo]:
+    """``omni_camera.query`` that tolerates pynokhwa's malformed Windows metadata.
+
+    Returns:
+        One ``CameraInfo`` per camera node, filtered to openable ones when *only_usable*.
+    """
+    try:
+        return omni_camera.query(only_usable=only_usable)
+    except json.JSONDecodeError:
+        pass
+    infos = [omni_camera.CameraInfo(*raw[:-1], _parse_device_meta(raw[-1])) for raw in omni_camera.pynokhwa.query()]
+    if only_usable:
+        infos = [info for info in infos if info.can_open()]
+    return infos
+
+
+def _resolve_camera_for_device_meta_json(device_meta_json: dict) -> list[omni_camera.CameraInfo]:
+    """``omni_camera.resolve_camera_for_device_meta_json`` that tolerates malformed Windows metadata.
+
+    Returns:
+        The usable cameras sharing the most identity fields with *device_meta_json*.
+    """
+    try:
+        return omni_camera.resolve_camera_for_device_meta_json(device_meta_json)
+    except json.JSONDecodeError:
+        pass
+    criteria = {key: value for key in _IDENTITY_FIELDS if (value := device_meta_json.get(key, ""))}
+    if not criteria:
+        return []
+    scored = []
+    for camera in _query(only_usable=True):
+        meta = camera.device_meta_json or {}
+        if score := sum(meta.get(key, "") == value for key, value in criteria.items()):
+            scored.append((score, camera))
+    if not scored:
+        return []
+    best = max(score for score, _ in scored)
+    return [camera for score, camera in scored if score == best]
 
 
 class _UsbIdentity(NamedTuple):
@@ -186,7 +237,7 @@ class OmniCamera(Camera):
                 does not support.
         """
         if isinstance(device_id, dict):
-            matches = omni_camera.resolve_camera_for_device_meta_json(device_id)
+            matches = _resolve_camera_for_device_meta_json(device_id)
             if len(matches) > 1:
                 msg = (
                     f"Camera identity {device_id!r} is shared by more than one connected device "
@@ -274,12 +325,12 @@ class OmniCamera(Camera):
         # returned by discover(). Unsupported devices (e.g. BGRA-only
         # virtual cameras) are caught later in _resolve_format().
         query_deadline = time.monotonic() + 2.0
-        infos_all = omni_camera.query(only_usable=False)
-        infos_usable = omni_camera.query(only_usable=True)
+        infos_all = _query(only_usable=False)
+        infos_usable = _query(only_usable=True)
         while not infos_all and time.monotonic() < query_deadline:
             time.sleep(0.1)
-            infos_all = omni_camera.query(only_usable=False)
-            infos_usable = omni_camera.query(only_usable=True)
+            infos_all = _query(only_usable=False)
+            infos_usable = _query(only_usable=True)
 
         # Try to find target in usable devices first
         try:
@@ -418,7 +469,7 @@ class OmniCamera(Camera):
     def discover(cls, *, only_usable: bool = True) -> list[DeviceInfo]:
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
-        infos = omni_camera.query(only_usable=only_usable)
+        infos = _query(only_usable=only_usable)
 
         return [
             DeviceInfo(
@@ -447,7 +498,7 @@ class OmniCamera(Camera):
         Returns:
             Sorted list of ``(width, height, fps)`` tuples.
         """
-        infos = omni_camera.query(only_usable=False)
+        infos = _query(only_usable=False)
         if isinstance(device_id, dict):
             cam = omni_camera.Camera(cls._resolve_open_target(infos, device_id))
         else:

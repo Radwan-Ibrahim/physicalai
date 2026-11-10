@@ -24,7 +24,6 @@ from __future__ import annotations
 import contextlib
 import enum
 import json
-import signal
 import sys
 import threading
 import time
@@ -53,6 +52,7 @@ from physicalai.robot.transport._ids import (  # noqa: PLC2701
 from physicalai.robot.transport._lock import NAME_KIND, LockContention, OwnedLocks, acquire_locks  # noqa: PLC2701
 from physicalai.robot.transport._owner_config import RobotOwnerConfig  # noqa: PLC2701
 from physicalai.robot.transport._session import open_session  # noqa: PLC2701
+from physicalai.transport._subprocess import install_stop_handler  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -565,7 +565,7 @@ def main() -> int:
     Returns:
         Exit code: 0 on success, 1 on startup failure.
     """
-    signal.signal(signal.SIGTERM, sigterm_handler)
+    install_stop_handler(sigterm_handler)
 
     raw = sys.stdin.read()
     sys.stdin.close()

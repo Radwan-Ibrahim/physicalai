@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import select
 import subprocess  # noqa: S404 # nosec: B404
 import sys
 from typing import TYPE_CHECKING, Literal, Self, cast
@@ -14,6 +13,7 @@ from typing import TYPE_CHECKING, Literal, Self, cast
 from loguru import logger
 
 from physicalai.robot.errors import RobotCalibrationError, RobotDeviceAlreadyOwned, RobotTransportError
+from physicalai.transport._subprocess import DETACHED_POPEN_KWARGS, read_stdout_line, request_stop  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.robot.transport._owner_config import RobotOwnerConfig
@@ -80,7 +80,7 @@ class RobotOwner:
             # Detach into a new session so the owner survives when the
             # parent exits / Ctrl+C's. Subsequent subscribers re-attach
             # by name.
-            start_new_session=True,
+            **DETACHED_POPEN_KWARGS,
         )
         assert self._process.stdin is not None  # noqa: S101
         self._process.stdin.write(json.dumps(self._config.to_json_dict()).encode())
@@ -161,7 +161,7 @@ class RobotOwner:
             self._process = None
             return
 
-        proc.terminate()
+        request_stop(proc)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -211,16 +211,6 @@ class RobotOwner:
             The stripped line, or ``None`` on timeout / EOF.
         """
         proc = self._process
-        if proc is None or proc.stdout is None:
+        if proc is None:
             return None
-
-        # select.select doesn't work on Windows pipes;
-        # a thread-based fallback would be needed for Windows support.
-        readable, _, _ = select.select([proc.stdout], [], [], timeout)
-        if not readable:
-            return None
-
-        raw = proc.stdout.readline()
-        if not raw:
-            return None
-        return raw.decode().strip()
+        return read_stdout_line(proc, timeout)

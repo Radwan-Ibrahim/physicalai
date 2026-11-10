@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import importlib
+import json
 import pathlib
 import sys
 import weakref
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -114,6 +116,22 @@ def test_connect_queries_cameras(omnicamera_cls: tuple) -> None:
     cam = camera_cls()
     cam.connect()
     assert any(call.kwargs.get("only_usable") is False for call in mock_omni_camera.query.call_args_list)
+
+
+def test_discover_tolerates_unescaped_windows_symlink(omnicamera_cls: tuple) -> None:
+    """Windows MediaFoundation symlinks arrive with raw backslashes and must still be discovered."""
+    camera_cls, mock_omni_camera = omnicamera_cls
+    mock_omni_camera.query.side_effect = json.JSONDecodeError("Invalid \\escape", "", 0)
+    raw_meta = '{"symlink": "\\\\?\\usb#vid_046d&pid_085c#123#{e5323777}\\global"}'
+    mock_omni_camera.pynokhwa.query.return_value = [(0, "USB Camera", "MediaFoundation Camera", raw_meta)]
+    mock_omni_camera.CameraInfo.side_effect = lambda index, name, description, meta: SimpleNamespace(
+        index=index, name=name, description=description, device_meta_json=meta
+    )
+
+    devices = camera_cls.discover(only_usable=False)
+
+    assert [device.index for device in devices] == [0]
+    assert devices[0].hardware_payload == {"symlink": "\\\\?\\usb#vid_046d&pid_085c#123#{e5323777}\\global"}
 
 
 def test_connect_creates_camera_without_suggested_fps(omnicamera_cls: tuple) -> None:
@@ -693,6 +711,9 @@ def test_discover_collapses_multi_node_single_camera(
         ({}, None),
     ],
     ids=["with-serial", "without-serial", "no-usb-parent"],
+)
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="sysfs layout uses ':' paths; _usb_identity is Linux-only"
 )
 def test_usb_identity_reads_the_owning_usb_device(
     omnicamera_cls: tuple,

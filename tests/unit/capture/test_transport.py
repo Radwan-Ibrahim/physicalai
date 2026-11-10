@@ -643,7 +643,7 @@ class TestSharedCameraConstruction:
         publisher = CameraPublisher(spec, "physicalai/test/svc/frame")
         with (
             patch("physicalai.capture.transport._publisher.subprocess.Popen", _FakeProc),
-            patch("physicalai.capture.transport._publisher.select.select", return_value=([object()], [], [])),
+            patch.object(CameraPublisher, "_read_stdout_line", return_value="READY"),
         ):
             publisher.start(timeout=1.0)
 

@@ -15,16 +15,17 @@ Both use a self-managed, user-scoped ``flock`` file (not a world-writable
 ``/tmp`` path, avoiding the CWE-377 predictable-path race). The lock
 belongs to an open file descriptor, so the OS releases it on process exit
 — including a crash or ``SIGKILL`` — without any cleanup code running.
+On Windows the same guarantee comes from an ``msvcrt`` byte-range lock.
 """
 
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,35 @@ if TYPE_CHECKING:
 
 NAME_KIND = "name"
 DEVICE_KIND = "device"
+
+if sys.platform == "win32":
+    import msvcrt
+
+    # Windows range locks are mandatory, so lock a byte far past the diagnostics to keep them readable.
+    _WINDOWS_LOCK_OFFSET = 1 << 30
+
+    def _range_lock(fd: int, mode: int) -> None:
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, mode, 1)
+        finally:
+            os.lseek(fd, position, os.SEEK_SET)
+
+    def _try_lock(fd: int) -> None:
+        _range_lock(fd, msvcrt.LK_NBLCK)
+
+    def _unlock(fd: int) -> None:
+        _range_lock(fd, msvcrt.LK_UNLCK)
+
+else:
+    import fcntl
+
+    def _try_lock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _lock_dir() -> Path:
@@ -49,6 +79,13 @@ def _lock_dir() -> Path:
             owned by the current user.
     """
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if sys.platform == "win32":
+        # The Windows temp directory is already per-user and ACL-protected; there is no uid or POSIX mode.
+        base = Path(runtime_dir) if runtime_dir else Path(tempfile.gettempdir()) / "physicalai"
+        lock_dir = base / "physicalai" / "robot-locks" if runtime_dir else base / "robot-locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        return lock_dir
+
     base = Path(runtime_dir) if runtime_dir else Path(tempfile.gettempdir()) / f"physicalai-{os.getuid()}"
 
     lock_dir = base / "physicalai" / "robot-locks" if runtime_dir else base / "robot-locks"
@@ -101,12 +138,14 @@ def _read_live_name_diagnostics(path: Path) -> dict[str, object] | None:
     pid = diagnostics.get("pid")
     if not isinstance(pid, int) or pid <= 0:
         return None
-    try:
-        # Signal 0 sends nothing; the kernel only validates that pid exists
-        # and is signalable by us, giving a liveness check with no side effect.
-        os.kill(pid, 0)
-    except OSError:
-        return None
+    # On Windows os.kill(pid, 0) terminates the process, so rely on the trylock below alone.
+    if sys.platform != "win32":
+        try:
+            # Signal 0 sends nothing; the kernel only validates that pid exists
+            # and is signalable by us, giving a liveness check with no side effect.
+            os.kill(pid, 0)
+        except OSError:
+            return None
 
     # A PID that is alive but has already released the lock (e.g. after a clean
     # shutdown or after a caller used acquire_locks/release_all for verification)
@@ -118,10 +157,10 @@ def _read_live_name_diagnostics(path: Path) -> dict[str, object] | None:
         return None
     held = False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _try_lock(fd)
         # Acquired the lock — no process is currently holding it.
         with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock(fd)
     except OSError:
         # Could not acquire — some process holds the lock; this is a live owner.
         held = True
@@ -233,7 +272,7 @@ class NamedLock:
             return True
         fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _try_lock(fd)
         except OSError:
             os.close(fd)
             return False
@@ -257,7 +296,7 @@ class NamedLock:
             return
         self._fd = None
         with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock(fd)
         os.close(fd)
 
     def __enter__(self) -> Self:

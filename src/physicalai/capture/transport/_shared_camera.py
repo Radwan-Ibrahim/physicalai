@@ -30,6 +30,7 @@ from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConn
 from physicalai.config import Config, export_config
 
 from ._header import FrameHeader, decode_header, decode_rgb
+from ._iox2_platform import prepare_iceoryx2
 from ._spec import derive_service_name, normalize_camera_config, validate_reconfigure_request
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ def _probe_service(service_name: str) -> bool:
         ``True`` if a publisher is reachable, ``False`` otherwise.
     """
     try:
+        prepare_iceoryx2()
         iox2 = cast("Any", import_module("iceoryx2"))
 
         node = iox2.NodeBuilder.new().create(iox2.ServiceType.Ipc)
@@ -279,6 +281,7 @@ class SharedCamera(Camera):
             else:
                 self._publisher = publisher
 
+        prepare_iceoryx2()
         iox2 = cast("Any", import_module("iceoryx2"))
 
         # Silence iceoryx2's kHz-rate ``FailedToDeliverSignal`` warnings.
@@ -330,6 +333,7 @@ class SharedCamera(Camera):
             msg = "shared camera is not connected"
             raise NotConnectedError(msg)
 
+        prepare_iceoryx2()
         iox2 = cast("Any", import_module("iceoryx2"))
 
         deadline = time.monotonic() + timeout
@@ -455,6 +459,7 @@ class SharedCamera(Camera):
 
         request = self._build_reconfigure_request()
 
+        prepare_iceoryx2()
         iox2 = cast("Any", import_module("iceoryx2"))
         control_name = f"{self._service_name}/control"
 

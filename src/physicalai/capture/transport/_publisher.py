@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import json
-import select
 import subprocess  # noqa: S404 # nosec: B404
 import sys
 from typing import TYPE_CHECKING, Self
 
 from physicalai.capture.errors import CaptureError
+from physicalai.transport._subprocess import DETACHED_POPEN_KWARGS, read_stdout_line, request_stop  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.capture.transport._spec import CameraPublisherConfig
@@ -83,7 +83,7 @@ class CameraPublisher:
             # Detach into a new session so the worker survives when the
             # parent exits / Ctrl+C's. Subsequent subscribers re-attach
             # by service name.
-            start_new_session=True,
+            **DETACHED_POPEN_KWARGS,
         )
         assert self._process.stdin is not None  # noqa: S101
         self._process.stdin.write(json.dumps(config).encode())
@@ -129,7 +129,7 @@ class CameraPublisher:
             self._process = None
             return
 
-        proc.terminate()
+        request_stop(proc)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -160,16 +160,6 @@ class CameraPublisher:
             The stripped line, or ``None`` on timeout / EOF.
         """
         proc = self._process
-        if proc is None or proc.stdout is None:
+        if proc is None:
             return None
-
-        # select.select doesn't work on Windows pipes;
-        # a thread-based fallback would be needed for Windows support.
-        readable, _, _ = select.select([proc.stdout], [], [], timeout)
-        if not readable:
-            return None
-
-        raw = proc.stdout.readline()
-        if not raw:
-            return None
-        return raw.decode().strip()
+        return read_stdout_line(proc, timeout)
