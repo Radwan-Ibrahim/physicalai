@@ -63,3 +63,5 @@ nav:
       - Robot API: reference/robot-api.md
       - Camera API: reference/camera-api.md
       - Benchmark API: reference/benchmark-api.md
+  - Proposals:
+      - Dual-System Humanoid Runtime: proposals/humanoid-dual-system.md
